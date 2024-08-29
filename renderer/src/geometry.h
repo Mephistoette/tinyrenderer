@@ -30,32 +30,16 @@ template <typename T> struct vec<2, T> {
 /////////////////////////////////////////////////////////////////////////////////
 
 template <typename T> struct vec<3, T> {
-    // Constructors
     vec() : x(T()), y(T()), z(T()) {}
     vec(T X, T Y, T Z) : x(X), y(Y), z(Z) {}
     template <class U> vec<3, T>(const vec<3, U>& v);
-
-    // Access operators
     T& operator[](const size_t i) { assert(i < 3); return i <= 0 ? x : (1 == i ? y : z); }
     const T& operator[](const size_t i) const { assert(i < 3); return i <= 0 ? x : (1 == i ? y : z); }
-
-    // Norm and normalization
     float norm() { return std::sqrt(x * x + y * y + z * z); }
     vec<3, T>& normalize(T l = 1) { *this = (*this) * (l / norm()); return *this; }
 
-    // Cross product
-    vec<3, T> operator^(const vec<3, T>& v) const {
-        return vec<3, T>(
-            y * v.z - z * v.y,
-            z * v.x - x * v.z,
-            x * v.y - y * v.x
-        );
-    }
-
-    // Data members
     T x, y, z;
 };
-
 
 /////////////////////////////////////////////////////////////////////////////////
 
@@ -187,16 +171,6 @@ public:
         mat<DimRows, DimCols, T> ret = adjugate();
         T tmp = ret[0] * rows[0];
         return ret / tmp;
-    }
-
-    mat<DimRows, DimCols, T> invert() {
-        return invert_transpose().transpose();
-    }
-
-    mat<DimCols, DimRows, T> transpose() {
-        mat<DimCols, DimRows, T> ret;
-        for (size_t i = DimCols; i--; ret[i] = this->col(i));
-        return ret;
     }
 };
 
