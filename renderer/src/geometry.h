@@ -70,7 +70,8 @@ template<size_t DIM, typename T, typename U> vec<DIM, T> operator/(vec<DIM, T> l
     return lhs;
 }
 
-template<size_t LEN, size_t DIM, typename T> vec<LEN, T> embed(const vec<DIM, T>& v, T fill = 1) {
+template<size_t LEN, size_t DIM, typename T> 
+vec<LEN, T> embed(const vec<DIM, T>& v, T fill = 1) {
     vec<LEN, T> ret;
     for (size_t i = LEN; i--; ret[i] = (i < DIM ? v[i] : fill));
     return ret;
@@ -171,6 +172,16 @@ public:
         mat<DimRows, DimCols, T> ret = adjugate();
         T tmp = ret[0] * rows[0];
         return ret / tmp;
+    }
+
+    mat<DimCols, DimRows, T> invert() {
+        return invert_transpose().transpose();
+    }
+
+    mat<DimCols, DimRows, T> transpose() {
+        mat<DimCols, DimRows, T> ret;
+        for (size_t i = DimRows; i--; ret[i] = this->col(i));
+        return ret;
     }
 };
 
