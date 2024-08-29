@@ -1,0 +1,23 @@
+# Ignore everything in the .vs folder
+.vs/
+x64/
+
+# Ignore all .sln files
+*.sln
+
+# Ignore x64 folder in the renderer directory
+renderer/x64/
+renderer/*.vcxproj
+# Ignore Visual Studio filter files (*.vcxproj.filters)
+renderer/*.vcxproj.filters
+
+# Ignore Visual Studio user-specific project files (*.vcxproj.user)
+renderer/*.vcxproj.user
+
+# Ignore Visual Studio code analysis and other configuration files
+renderer/*.ruleset
+renderer/*.suo
+renderer/*.ncb
+renderer/*.user
+renderer/*.mssccprj
+renderer/*.vssscc
