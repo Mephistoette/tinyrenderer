@@ -1,4 +1,5 @@
 #include <vector>
+#include <cstdlib>
 #include <limits>
 #include <iostream>
 #include "tgaimage.h"
@@ -6,72 +7,89 @@
 #include "geometry.h"
 #include "our_gl.h"
 
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 Model* model = NULL;
 float* shadowbuffer = NULL;
 
 const int width = 800;
 const int height = 800;
 
-Vec3f light_dir(1, 1, 0);
-Vec3f       eye(1, 1, 4);
+Vec3f       eye(1.2, -.8, 3);
 Vec3f    center(0, 0, 0);
 Vec3f        up(0, 1, 0);
 
-struct Shader : public IShader {
-    mat<4, 4, float> uniform_M;   //  Projection*ModelView
-    mat<4, 4, float> uniform_MIT; // (Projection*ModelView).invert_transpose()
-    mat<4, 4, float> uniform_Mshadow; // transform framebuffer screen coordinates to shadowbuffer screen coordinates
-    mat<2, 3, float> varying_uv;  // triangle uv coordinates, written by the vertex shader, read by the fragment shader
-    mat<3, 3, float> varying_tri; // triangle coordinates before Viewport transform, written by VS, read by FS
+TGAImage total(1024, 1024, TGAImage::GRAYSCALE);
+TGAImage  occl(1024, 1024, TGAImage::GRAYSCALE);
 
-    Shader(Matrix M, Matrix MIT, Matrix MS) : uniform_M(M), uniform_MIT(MIT), uniform_Mshadow(MS), varying_uv(), varying_tri() {}
+
+struct ZShader : public IShader {
+    mat<4, 3, float> varying_tri; //三角形顶点坐标经过一些变换之后再转换为齐次坐标之后填充的矩阵
 
     virtual Vec4f vertex(int iface, int nthvert) {
-        //vertex shader 执行了相似的功能
-        varying_uv.set_col(nthvert, model->uv(iface, nthvert));
-        Vec4f gl_Vertex = Viewport * Projection * ModelView * embed<4>(model->vert(iface, nthvert));
-        varying_tri.set_col(nthvert, proj<3>(gl_Vertex / gl_Vertex[3]));
+        Vec4f gl_Vertex = Projection * ModelView * embed<4>(model->vert(iface, nthvert)); //P*M*齐次坐标顶点 M只是从模型空间转换到摄像机视角
+        varying_tri.set_col(nthvert, gl_Vertex);  //varying_tri是这个由这个三角转换之后的三个顶点坐标填充的4*3矩阵
         return gl_Vertex;
     }
 
-    virtual bool fragment(Vec3f bar, TGAColor& color) {
-        Vec4f sb_p = uniform_Mshadow * embed<4>(varying_tri * bar); // 得到shadow buffer中对应的坐标
-        sb_p = sb_p / sb_p[3];
-        int idx = int(sb_p[0]) + int(sb_p[1]) * width; // index in the shadowbuffer array
-        float shadow = .3 + .7 * (shadowbuffer[idx] < sb_p[2]); // 避免z-fighting
-        Vec2f uv = varying_uv * bar;                 // 插值pixel uv坐标
-        Vec3f n = proj<3>(uniform_MIT * embed<4>(model->normal(uv))).normalize(); // 法线
-        Vec3f l = proj<3>(uniform_M * embed<4>(light_dir)).normalize(); // 光源
-        Vec3f r = (n * (n * l * 2.f) - l).normalize();   // 反射向量
-        float spec = pow(std::max(r.z, 0.0f), model->specular(uv)); //高光
-        float diff = std::max(0.f, n * l); //漫反射
-        TGAColor c = model->diffuse(uv);
-        for (int i = 0; i < 3; i++) color[i] = std::min<float>(20 + c[i] * shadow * (1.2 * diff + .6 * spec), 255); 
+    virtual bool fragment(Vec3f gl_FragCoord, Vec3f bar, TGAColor& color) {
+        color = TGAColor(255, 255, 255) * ((gl_FragCoord.z + 1.f) / 2.f); //计算zuffer 对应纹理color
         return false;
     }
 };
 
-struct DepthShader : public IShader {
-    mat<3, 3, float> varying_tri;
-
-    DepthShader() : varying_tri() {}
+struct Shader : public IShader {
+    mat<2, 3, float> varying_uv; // 三角形顶点u,v坐标填充的矩阵
+    mat<4, 3, float> varying_tri; //三角形顶点坐标经过一些变换之后再转换为齐次坐标之后填充的矩阵
 
     virtual Vec4f vertex(int iface, int nthvert) {
-        Vec4f gl_Vertex = embed<4>(model->vert(iface, nthvert)); //转为齐次坐标
-
-        gl_Vertex = Viewport * Projection * ModelView * gl_Vertex;        //转为屏幕空间坐标  
-
-        varying_tri.set_col(nthvert, proj<3>(gl_Vertex / gl_Vertex[3]));    
-
+        varying_uv.set_col(nthvert, model->uv(iface, nthvert)); // 获取uv坐标
+        Vec4f gl_Vertex = Projection * ModelView * embed<4>(model->vert(iface, nthvert)); //齐次坐标顶点
+        varying_tri.set_col(nthvert, gl_Vertex); //三角形顶点
         return gl_Vertex;
     }
 
-    virtual bool fragment(Vec3f bar, TGAColor& color) {
-        Vec3f p = varying_tri * bar;            //插值得到pixel 坐标
-        color = TGAColor(255, 255, 255) * (p.z / depth);
-        return false; 
+    virtual bool fragment(Vec3f gl_FragCoord, Vec3f bar, TGAColor& color) {
+        Vec2f uv = varying_uv * bar; //插值得到pixel的u、v值
+
+        if (std::abs(shadowbuffer[int(gl_FragCoord.x + gl_FragCoord.y * width)] - gl_FragCoord.z < 1e-2)) {
+            occl.set(uv.x * 1024, uv.y * 1024, TGAColor(255)); //判断是否在阴影中
+        }
+        color = TGAColor(255, 0, 0);
+        return false;
     }
 };
+
+struct AOShader : public IShader {
+    mat<2, 3, float> varying_uv;
+    mat<4, 3, float> varying_tri;
+    TGAImage aoimage;
+
+    virtual Vec4f vertex(int iface, int nthvert) {
+        varying_uv.set_col(nthvert, model->uv(iface, nthvert)); //uv插值矩阵
+        Vec4f gl_Vertex = Projection * ModelView * embed<4>(model->vert(iface, nthvert));
+        varying_tri.set_col(nthvert, gl_Vertex); //三角形插值矩阵
+        return gl_Vertex;
+    }
+
+    virtual bool fragment(Vec3f gl_FragCoord, Vec3f bar, TGAColor& color) {
+        Vec2f uv = varying_uv * bar; // uv 坐标获取
+        int t = aoimage.get(uv.x * 1024, uv.y * 1024)[0]; //获取aoimage
+        color = TGAColor(t, t, t);
+        return false;
+    }
+};
+
+Vec3f rand_point_on_unit_sphere() {
+    float u = (float)rand() / (float)RAND_MAX;
+    float v = (float)rand() / (float)RAND_MAX;
+    float theta = 2.f * M_PI * u;
+    float phi = acos(2.f * v - 1.f);
+    return Vec3f(sin(phi) * cos(theta), sin(phi) * sin(theta), cos(phi));
+}
 
 int main(int argc, char** argv) {
     if (2 > argc) {
@@ -80,56 +98,85 @@ int main(int argc, char** argv) {
     }
 
     float* zbuffer = new float[width * height];
-    shadowbuffer = new float[width * height];  //shadow map
-
-    for (int i = width * height; --i; ) {
-        zbuffer[i] = shadowbuffer[i] = -std::numeric_limits<float>::max();
-    }
-
+    shadowbuffer = new float[width * height];
     model = new Model(argv[1]);
-    light_dir.normalize();
 
-    { // 光源方向渲染
-        TGAImage depth(width, height, TGAImage::RGB);
-        lookat(light_dir, center, up); //视口矩阵
-        viewport(width / 8, height / 8, width * 3 / 4, height * 3 / 4); //观察矩阵
-        projection(0); //透镜
+    TGAImage frame(width, height, TGAImage::RGB);
+    lookat(eye, center, up); //相机
+    viewport(width / 8, height / 8, width * 3 / 4, height * 3 / 4); //NDC空间
+    projection(-1.f / (eye - center).norm()); //斜投影
+    for (int i = width * height; i--; zbuffer[i] = -std::numeric_limits<float>::max());
 
-        DepthShader depthshader;
-        Vec4f screen_coords[3];
-        for (int i = 0; i < model->nfaces(); i++) {
-            for (int j = 0; j < 3; j++) {
-                screen_coords[j] = depthshader.vertex(i, j);
-            }
-            triangle(screen_coords, depthshader, depth, shadowbuffer);
-        }
-        depth.flip_vertically(); 
-        depth.write_tga_file("depth.tga");
-    }
+    
+    //AOShader aoshader;
+    //aoshader.aoimage.read_tga_file("occlusion.tga");
+    //aoshader.aoimage.flip_vertically();
+    //for (int i=0; i<model->nfaces(); i++) {
+    //    for (int j=0; j<3; j++) {
+    //        aoshader.vertex(i, j);
+    //    }
+    //    triangle(aoshader.varying_tri, aoshader, frame, zbuffer);
+    //}
+    //frame.flip_vertically();
+    //frame.write_tga_file("framebuffer.tga");
+    //return 0;
+    
 
-    Matrix M = Viewport * Projection * ModelView;
+    const int nrenders = 1;
 
-    { // 相机方向渲染
+    for (int iter = 1; iter <= nrenders; iter++) {
+        std::cerr << iter << " from " << nrenders << std::endl;
+        for (int i = 0; i < 3; i++) up[i] = (float)rand() / (float)RAND_MAX; //获取三个随机值；
+        eye = rand_point_on_unit_sphere(); //获取单位球随机点
+        eye.y = std::abs(eye.y); //转为半球
+        std::cout << "v " << eye << std::endl;
+
+        for (int i = width * height; i--; shadowbuffer[i] = zbuffer[i] = -std::numeric_limits<float>::max());
+
         TGAImage frame(width, height, TGAImage::RGB);
-        lookat(eye, center, up); 
+        lookat(eye, center, up); //观察eye点方向
         viewport(width / 8, height / 8, width * 3 / 4, height * 3 / 4);
-        projection(-1.f / (eye - center).norm());
+        projection(0);//-1.f/(eye-center).norm());  //正投影
 
-        //Shader(Matrix M, Matrix MIT, Matrix MS) MIT是转移模型空间法线的矩阵，MS是将相机空间的顶点转移到灯源空间
-        Shader shader(ModelView, (Projection * ModelView).invert_transpose(), M * (Viewport * Projection * ModelView).invert()); 
-        Vec4f screen_coords[3];
+        //zbuffer shadow 和 shadow buffer
+        //第一遍pass
+        ZShader zshader;
         for (int i = 0; i < model->nfaces(); i++) {
             for (int j = 0; j < 3; j++) {
-                screen_coords[j] = shader.vertex(i, j);
+                zshader.vertex(i, j); // vertex shader
             }
-            triangle(screen_coords, shader, frame, zbuffer);
+            triangle(zshader.varying_tri, zshader, frame, shadowbuffer);
         }
-        frame.flip_vertically(); 
-        frame.write_tga_file("framebuffer.tga");
-    }
+        frame.flip_vertically();
+        frame.write_tga_file("framebuffer.tga"); 
 
-    delete model;
+        //摄像机视角
+        //第二遍pass
+        Shader shader;
+        occl.clear();
+        for (int i = 0; i < model->nfaces(); i++) {
+            for (int j = 0; j < 3; j++) {
+                shader.vertex(i, j);
+            }
+            triangle(shader.varying_tri, shader, frame, zbuffer);
+        }
+
+        //  对已经获得的texture 进行高斯模糊
+        for (int i = 0; i < 1024; i++) {
+            for (int j = 0; j < 1024; j++) {
+                float tmp = total.get (i, j)[0];
+                total.set(i, j, TGAColor((tmp * (iter - 1) + occl.get(i, j)[0]) / (float)iter + .5f));
+            }
+        }
+    }
+    total.flip_vertically();
+    total.write_tga_file("occlusion.tga");
+
+    occl.flip_vertically();
+    occl.write_tga_file("occl.tga");
+
     delete[] zbuffer;
+    delete model;
     delete[] shadowbuffer;
     return 0;
 }
