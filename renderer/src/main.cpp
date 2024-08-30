@@ -90,6 +90,21 @@ Vec3f rand_point_on_unit_sphere() {
     float phi = acos(2.f * v - 1.f);
     return Vec3f(sin(phi) * cos(theta), sin(phi) * sin(theta), cos(phi));
 }
+ 
+//计算最大仰角 采用的是HBAO
+float max_elevation_angle(float* zbuffer, Vec2f p, Vec2f dir) {
+    float maxangle = 0;
+    for (float t = 0.; t < 1000.; t += 1.) {
+        Vec2f cur = p + dir * t;
+        if (cur.x >= width || cur.y >= height || cur.x < 0 || cur.y < 0) return maxangle;
+
+        float distance = (p - cur).norm();
+        if (distance < 1.f) continue;
+        float elevation = zbuffer[int(cur.x) + int(cur.y) * width] - zbuffer[int(p.x) + int(p.y) * width];
+        maxangle = std::max(maxangle, atanf(elevation / distance));
+    }
+    return maxangle;
+}
 
 int main(int argc, char** argv) {
     if (2 > argc) {
@@ -98,85 +113,42 @@ int main(int argc, char** argv) {
     }
 
     float* zbuffer = new float[width * height];
-    shadowbuffer = new float[width * height];
+
+    for (int i = width * height; i--; zbuffer[i] = -std::numeric_limits<float>::max());
     model = new Model(argv[1]);
 
     TGAImage frame(width, height, TGAImage::RGB);
     lookat(eye, center, up); //相机
     viewport(width / 8, height / 8, width * 3 / 4, height * 3 / 4); //NDC空间
     projection(-1.f / (eye - center).norm()); //斜投影
-    for (int i = width * height; i--; zbuffer[i] = -std::numeric_limits<float>::max());
 
-    
-    //AOShader aoshader;
-    //aoshader.aoimage.read_tga_file("occlusion.tga");
-    //aoshader.aoimage.flip_vertically();
-    //for (int i=0; i<model->nfaces(); i++) {
-    //    for (int j=0; j<3; j++) {
-    //        aoshader.vertex(i, j);
-    //    }
-    //    triangle(aoshader.varying_tri, aoshader, frame, zbuffer);
-    //}
-    //frame.flip_vertically();
-    //frame.write_tga_file("framebuffer.tga");
-    //return 0;
-    
-
+    //第一遍pass 获取zbuffer
+    ZShader zshader; 
+    for (int i = 0; i < model->nfaces(); i++) {
+        for (int j = 0; j < 3; j++) {
+            zshader.vertex(i, j);
+        }
+        triangle(zshader.varying_tri, zshader, frame, zbuffer);
+    }
     const int nrenders = 1;
 
-    for (int iter = 1; iter <= nrenders; iter++) {
-        std::cerr << iter << " from " << nrenders << std::endl;
-        for (int i = 0; i < 3; i++) up[i] = (float)rand() / (float)RAND_MAX; //获取三个随机值；
-        eye = rand_point_on_unit_sphere(); //获取单位球随机点
-        eye.y = std::abs(eye.y); //转为半球
-        std::cout << "v " << eye << std::endl;
-
-        for (int i = width * height; i--; shadowbuffer[i] = zbuffer[i] = -std::numeric_limits<float>::max());
-
-        TGAImage frame(width, height, TGAImage::RGB);
-        lookat(eye, center, up); //观察eye点方向
-        viewport(width / 8, height / 8, width * 3 / 4, height * 3 / 4);
-        projection(0);//-1.f/(eye-center).norm());  //正投影
-
-        //zbuffer shadow 和 shadow buffer
-        //第一遍pass
-        ZShader zshader;
-        for (int i = 0; i < model->nfaces(); i++) {
-            for (int j = 0; j < 3; j++) {
-                zshader.vertex(i, j); // vertex shader
+    //屏幕空间AO 
+    for (int x = 0; x < width; x++) {
+        for (int y = 0; y < height; y++) {
+            if (zbuffer[x + y * width] < -1e5) continue;
+            float total = 0;
+            for (float a = 0; a < M_PI * 2 - 1e-4; a += M_PI / 4) {
+                total += M_PI / 2 - max_elevation_angle(zbuffer, Vec2f(x, y), Vec2f(cos(a), sin(a)));
             }
-            triangle(zshader.varying_tri, zshader, frame, shadowbuffer);
-        }
-        frame.flip_vertically();
-        frame.write_tga_file("framebuffer.tga"); 
-
-        //摄像机视角
-        //第二遍pass
-        Shader shader;
-        occl.clear();
-        for (int i = 0; i < model->nfaces(); i++) {
-            for (int j = 0; j < 3; j++) {
-                shader.vertex(i, j);
-            }
-            triangle(shader.varying_tri, shader, frame, zbuffer);
-        }
-
-        //  对已经获得的texture 进行高斯模糊
-        for (int i = 0; i < 1024; i++) {
-            for (int j = 0; j < 1024; j++) {
-                float tmp = total.get (i, j)[0];
-                total.set(i, j, TGAColor((tmp * (iter - 1) + occl.get(i, j)[0]) / (float)iter + .5f));
-            }
+            total /= (M_PI / 2) * 8;
+            total = pow(total, 100.f);
+            frame.set(x, y, TGAColor(total * 255, total * 255, total * 255));
         }
     }
-    total.flip_vertically();
-    total.write_tga_file("occlusion.tga");
 
-    occl.flip_vertically();
-    occl.write_tga_file("occl.tga");
-
+    frame.flip_vertically();
+    frame.write_tga_file("framebuffer.tga");
     delete[] zbuffer;
     delete model;
-    delete[] shadowbuffer;
     return 0;
 }
